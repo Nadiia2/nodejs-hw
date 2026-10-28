@@ -12,7 +12,6 @@ import { createSession, setSessionCookies } from '../services/auth.js';
 
 import { sendEmail } from '../utils/sendMail.js';
 
-// POST /auth/register
 export const registerUser = async (req, res) => {
   const { email, password } = req.body;
 
@@ -46,7 +45,6 @@ export const registerUser = async (req, res) => {
   res.status(201).json(user);
 };
 
-// POST /auth/login
 export const loginUser = async (req, res) => {
   const { email, password } = req.body;
 
@@ -73,7 +71,6 @@ export const loginUser = async (req, res) => {
   res.status(200).json(user);
 };
 
-// POST /auth/refresh
 export const refreshUserSession = async (req, res) => {
   const { sessionId, refreshToken } = req.cookies ?? {};
 
@@ -117,7 +114,6 @@ export const refreshUserSession = async (req, res) => {
   });
 };
 
-// POST /auth/logout
 export const logoutUser = async (req, res) => {
   const { sessionId } = req.cookies ?? {};
 
@@ -140,7 +136,6 @@ export const logoutUser = async (req, res) => {
   res.status(204).send();
 };
 
-// POST /auth/request-reset-email
 export const requestResetEmail = async (req, res) => {
   const { email } = req.body;
 
@@ -184,6 +179,7 @@ export const requestResetEmail = async (req, res) => {
 
   try {
     await sendEmail({
+      from: process.env.SMTP_FROM,
       to: user.email,
       subject: 'Password Reset',
       html,
@@ -200,7 +196,6 @@ export const requestResetEmail = async (req, res) => {
   });
 };
 
-// POST /auth/reset-password
 export const resetPassword = async (req, res) => {
   const { token, password } = req.body;
 
@@ -235,7 +230,6 @@ export const resetPassword = async (req, res) => {
 
   await user.save();
 
-  // Старые сессии больше не должны действовать
   await Session.deleteMany({
     userId: user._id,
   });
