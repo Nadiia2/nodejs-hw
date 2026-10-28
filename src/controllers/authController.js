@@ -1,16 +1,24 @@
 import bcrypt from 'bcrypt';
 import createHttpError from 'http-errors';
+import jwt from 'jsonwebtoken';
+import handlebars from 'handlebars';
+
+import { readFile } from 'node:fs/promises';
 
 import { User } from '../models/user.js';
 import { Session } from '../models/session.js';
 
 import { createSession, setSessionCookies } from '../services/auth.js';
 
+import { sendEmail } from '../utils/sendMail.js';
+
+// POST /auth/register
 export const registerUser = async (req, res) => {
   const { email, password } = req.body;
-  const oldUser = await User.findOne({ email });
 
-  if (oldUser) {
+  const existingUser = await User.findOne({ email });
+
+  if (existingUser) {
     throw createHttpError(400, 'Email in use');
   }
 
@@ -38,6 +46,7 @@ export const registerUser = async (req, res) => {
   res.status(201).json(user);
 };
 
+// POST /auth/login
 export const loginUser = async (req, res) => {
   const { email, password } = req.body;
 
@@ -64,6 +73,7 @@ export const loginUser = async (req, res) => {
   res.status(200).json(user);
 };
 
+// POST /auth/refresh
 export const refreshUserSession = async (req, res) => {
   const { sessionId, refreshToken } = req.cookies ?? {};
 
@@ -107,8 +117,9 @@ export const refreshUserSession = async (req, res) => {
   });
 };
 
+// POST /auth/logout
 export const logoutUser = async (req, res) => {
-  const { sessionId } = req.cookies;
+  const { sessionId } = req.cookies ?? {};
 
   if (sessionId) {
     await Session.deleteOne({
@@ -122,9 +133,124 @@ export const logoutUser = async (req, res) => {
     sameSite: 'none',
   };
 
+  res.clearCookie('sessionId', cookieOptions);
   res.clearCookie('accessToken', cookieOptions);
   res.clearCookie('refreshToken', cookieOptions);
-  res.clearCookie('sessionId', cookieOptions);
 
   res.status(204).send();
+};
+
+// POST /auth/request-reset-email
+export const requestResetEmail = async (req, res) => {
+  const { email } = req.body;
+
+  const user = await User.findOne({ email });
+
+  if (!user) {
+    return res.status(200).json({
+      message: 'Password reset email sent successfully',
+    });
+  }
+
+  const token = jwt.sign(
+    {
+      sub: user._id.toString(),
+      email: user.email,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: '15m',
+    },
+  );
+
+  const frontendDomain = process.env.FRONTEND_DOMAIN.replace(/\/$/, '');
+
+  const resetLink =
+    `${frontendDomain}/reset-password?token=` + encodeURIComponent(token);
+
+  const templatePath = new URL(
+    '../templates/reset-password-email.html',
+    import.meta.url,
+  );
+
+  const templateSource = await readFile(templatePath, 'utf8');
+
+  const template = handlebars.compile(templateSource);
+
+  const html = template({
+    name: user.username || user.email,
+    resetLink,
+  });
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Password Reset',
+      html,
+    });
+  } catch {
+    throw createHttpError(
+      500,
+      'Failed to send the email, please try again later.',
+    );
+  }
+
+  res.status(200).json({
+    message: 'Password reset email sent successfully',
+  });
+};
+
+// POST /auth/reset-password
+export const resetPassword = async (req, res) => {
+  const { token, password } = req.body;
+
+  let payload;
+
+  try {
+    payload = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    throw createHttpError(401, 'Invalid or expired token');
+  }
+
+  if (typeof payload !== 'object' || !payload.sub || !payload.email) {
+    throw createHttpError(401, 'Invalid or expired token');
+  }
+
+  const user = await User.findOne({
+    _id: payload.sub,
+    email: payload.email,
+  });
+
+  if (!user) {
+    throw createHttpError(404, 'User not found');
+  }
+
+  if (password.length < 8) {
+    throw createHttpError(400, 'Password must be at least 8 characters long');
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  user.password = hashedPassword;
+
+  await user.save();
+
+  // Старые сессии больше не должны действовать
+  await Session.deleteMany({
+    userId: user._id,
+  });
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+  };
+
+  res.clearCookie('sessionId', cookieOptions);
+  res.clearCookie('accessToken', cookieOptions);
+  res.clearCookie('refreshToken', cookieOptions);
+
+  res.status(200).json({
+    message: 'Password reset successfully',
+  });
 };
